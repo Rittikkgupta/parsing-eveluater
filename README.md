@@ -117,7 +117,7 @@ OCR fallback requires additional system/python dependencies (not installed by de
 
 ```mermaid
 flowchart TD
-  A[Client] -->|POST /parse (pdf)| B[FastAPI /parse]
+  A[Client] -->|POST /parse (pdf)| B[FastAPI parse endpoint]
   B --> C[Stream upload to temp file]
   C --> D{max_pages?}
   D -->|no| E[Parse full PDF]
