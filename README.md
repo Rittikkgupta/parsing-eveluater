@@ -1,11 +1,14 @@
 # Parsing Evaluator (PDF -> Markdown + JSON)
 
-Parse PDFs into a page-by-page Markdown file and a structured JSON payload.
+Turn a PDF into two outputs:
+
+- A single Markdown file where each PDF page becomes its own section (easy to read, diff, and review)
+- A JSON file with the same per-page text plus structured fields (metadata, links, issues, and metrics) for programmatic use
 
 This repo includes:
 
-- A parsing pipeline built on PyMuPDF, with optional LLM cleanup and OCR fallbacks.
-- A FastAPI service that exposes the pipeline as a single upload endpoint.
+- A parsing pipeline built on PyMuPDF that extracts text page-by-page, with optional LLM cleanup and OCR fallbacks when text extraction is poor.
+- A FastAPI service that exposes that pipeline as a single file-upload endpoint, returning a zip containing the Markdown + JSON outputs.
 
 ## Quickstart
 
@@ -117,7 +120,7 @@ OCR fallback requires additional system/python dependencies (not installed by de
 
 ```mermaid
 flowchart TD
-  A[Client] -->|POST /parse (pdf)| B[FastAPI parse endpoint]
+  A[Client] -->|POST /parse pdf| B[FastAPI parse endpoint]
   B --> C[Stream upload to temp file]
   C --> D{max_pages?}
   D -->|no| E[Parse full PDF]
