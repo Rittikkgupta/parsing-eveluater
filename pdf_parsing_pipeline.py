@@ -558,29 +558,33 @@ class LangGraphPDFEvaluationPipeline:
         issues = list(state.get("issues", []))
         text = state["text"]
         source = "pymupdf_llm"
-        try:
-            candidate = self.ollama_client.cleanup_page_text(
-                state["pdf_name"], state["page_number"], text
-            )
-            if candidate:
-                text = candidate
-        except (RuntimeError, urllib.error.URLError, TimeoutError) as exc:
-            issues.append(f"LLM fallback unavailable on page {state['page_number']}: {exc}")
-            if self.groq_client is not None:
-                try:
-                    candidate = self.groq_client.cleanup_page_text(
-                        state["pdf_name"], state["page_number"], text
-                    )
-                    if candidate:
-                        text = candidate
-                        source = "pymupdf_groq"
-                        issues.append(
-                            f"Groq fallback used successfully on page {state['page_number']}"
-                        )
-                except Exception as groq_exc:
-                    issues.append(
-                        f"Groq fallback unavailable on page {state['page_number']}: {groq_exc}"
-                    )
+
+        # Preference order:
+        # - If Groq is configured, use it first (fast, hosted).
+        # - If Groq isn't available (no API key) or fails, fall back to local Ollama.
+        if self.groq_client is not None:
+            try:
+                candidate = self.groq_client.cleanup_page_text(
+                    state["pdf_name"], state["page_number"], text
+                )
+                if candidate:
+                    text = candidate
+                    source = "pymupdf_groq"
+                    issues.append(f"Groq cleanup used on page {state['page_number']}")
+            except Exception as exc:
+                issues.append(f"Groq cleanup unavailable on page {state['page_number']}: {exc}")
+
+        if source != "pymupdf_groq":
+            try:
+                candidate = self.ollama_client.cleanup_page_text(
+                    state["pdf_name"], state["page_number"], text
+                )
+                if candidate:
+                    text = candidate
+                    source = "pymupdf_ollama"
+                    issues.append(f"Ollama cleanup used on page {state['page_number']}")
+            except (RuntimeError, urllib.error.URLError, TimeoutError) as exc:
+                issues.append(f"Ollama cleanup unavailable on page {state['page_number']}: {exc}")
 
         return {
             "text": text,
@@ -725,26 +729,30 @@ class LangGraphPDFEvaluationPipeline:
             gt_path = gt_dir / f"page_{item['page']}.txt"
             if gt_path.exists():
                 continue
-            try:
-                gt_text = self.ollama_client.generate_ground_truth(
-                    state["pdf_name"], item["page"], item["text"]
-                )
-            except (RuntimeError, urllib.error.URLError, TimeoutError) as exc:
-                issues.append(f"Ground truth generation failed for page {item['page']}: {exc}")
-                gt_text = ""
-                if self.groq_client is not None:
-                    try:
-                        gt_text = self.groq_client.generate_ground_truth(
-                            state["pdf_name"], item["page"], item["text"]
-                        )
-                        if gt_text.strip():
-                            issues.append(
-                                f"Groq generated ground truth for page {item['page']}"
-                            )
-                    except Exception as groq_exc:
-                        issues.append(
-                            f"Groq ground truth generation failed for page {item['page']}: {groq_exc}"
-                        )
+            gt_text = ""
+            if self.groq_client is not None:
+                try:
+                    gt_text = self.groq_client.generate_ground_truth(
+                        state["pdf_name"], item["page"], item["text"]
+                    )
+                    if gt_text.strip():
+                        issues.append(f"Groq generated ground truth for page {item['page']}")
+                except Exception as groq_exc:
+                    issues.append(
+                        f"Groq ground truth generation failed for page {item['page']}: {groq_exc}"
+                    )
+
+            if not gt_text.strip():
+                try:
+                    gt_text = self.ollama_client.generate_ground_truth(
+                        state["pdf_name"], item["page"], item["text"]
+                    )
+                    if gt_text.strip():
+                        issues.append(f"Ollama generated ground truth for page {item['page']}")
+                except (RuntimeError, urllib.error.URLError, TimeoutError) as exc:
+                    issues.append(
+                        f"Ollama ground truth generation failed for page {item['page']}: {exc}"
+                    )
             if gt_text.strip():
                 gt_path.write_text(gt_text.strip() + "\n", encoding="utf-8")
         return {"ground_truth_dir": str(gt_dir), "issues": issues}
