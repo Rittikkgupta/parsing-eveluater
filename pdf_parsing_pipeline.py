@@ -535,18 +535,28 @@ class LangGraphPDFEvaluationPipeline:
         return workflow
 
     def _page_primary_parser(self, state: PageState) -> PageState:
-        text = extract_text_with_pymupdf(state["page"])
+        issues: list[str] = []
+        try:
+            text = extract_text_with_pymupdf(state["page"])
+        except Exception as exc:
+            text = ""
+            issues.append(f"PyMuPDF text extraction failed on page {state['page_number']}: {exc}")
+        try:
+            links = extract_links(state["page"])
+        except Exception as exc:
+            links = []
+            issues.append(f"PyMuPDF link extraction failed on page {state['page_number']}: {exc}")
         return {
             "raw_text": text,
             "text": text,
             "source": "pymupdf",
-            "links": extract_links(state["page"]),
+            "links": links,
             "quality": assess_text_quality(
                 text,
                 min_chars=state["parser_min_chars"],
                 min_words=state["parser_min_words"],
             ),
-            "issues": [],
+            "issues": issues,
         }
 
     def _route_after_primary(self, state: PageState) -> Literal["llm_fallback", "post_process"]:
@@ -665,11 +675,37 @@ class LangGraphPDFEvaluationPipeline:
         page_item["issues"] = page_item["issues"] + validate_page(page_item)
         return page_item
 
+    def _error_page_item(
+        self,
+        pdf_name: str,
+        page_number: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        text = ""
+        quality = assess_text_quality(
+            text,
+            min_chars=self.config.parser_min_chars,
+            min_words=self.config.parser_min_words,
+        )
+        page_item = {
+            "page": page_number,
+            "text": text,
+            "source": "error",
+            "quality": quality,
+            "links": [],
+            "issues": [f"Page {page_number} parse failed: {reason}"],
+        }
+        page_item["issues"] = page_item["issues"] + validate_page(page_item)
+        return page_item
+
     def _invoke_page_graph_for_pdf(
         self, pdf_path: str, pdf_name: str, page_number: int
     ) -> dict[str, Any]:
-        with fitz.open(pdf_path) as doc:
-            return self._invoke_page_graph(doc[page_number - 1], pdf_name, page_number)
+        try:
+            with fitz.open(pdf_path) as doc:
+                return self._invoke_page_graph(doc[page_number - 1], pdf_name, page_number)
+        except Exception as exc:
+            return self._error_page_item(pdf_name, page_number, str(exc))
 
     def _parse_pages(self, state: DocumentState) -> DocumentState:
         doc = state["doc"]
@@ -687,7 +723,7 @@ class LangGraphPDFEvaluationPipeline:
                 )
         else:
             parsed_pages = [
-                self._invoke_page_graph(doc[page_number - 1], state["pdf_name"], page_number)
+                self._invoke_page_graph_for_pdf(state["pdf_path"], state["pdf_name"], page_number)
                 for page_number in page_numbers
             ]
 

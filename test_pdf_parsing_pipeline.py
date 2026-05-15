@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import fitz
+import pytest
 
 from src.pdf_parsing_pipeline import (
     LangGraphPDFEvaluationPipeline,
@@ -98,7 +99,7 @@ def test_pipeline_uses_llm_fallback_for_low_quality_pages(tmp_path: Path) -> Non
     result = pipeline.run(pdf_path)
     page = result["parsed_pages"][0]
 
-    assert page["source"] == "pymupdf_llm"
+    assert page["source"] == "pymupdf_ollama"
     assert "Cleaned fallback text for evaluation." in page["text"]
     assert page["quality"]["is_low_quality"] is False
 
@@ -131,3 +132,36 @@ def test_pipeline_uses_groq_when_ollama_fails(tmp_path: Path) -> None:
     assert "Groq cleaned text." in page["text"]
     assert gt_file.exists()
     assert gt_file.read_text(encoding="utf-8").strip() == "Groq ground truth."
+
+
+def test_pipeline_recovers_when_a_page_parse_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pdf_path = tmp_path / "flaky.pdf"
+    build_pdf(pdf_path, ["Page one text.", "Page two text."])
+
+    config = PDFPipelineConfig(
+        parsed_output_dir=tmp_path / "parsed_output",
+        ground_truth_dir=tmp_path / "ground_truth",
+        evaluation_dir=tmp_path / "evaluation",
+        cache_dir=tmp_path / "cache",
+        parser_min_chars=5,
+        parser_min_words=1,
+        llm_cleanup_enabled=False,
+        ocr_enabled=False,
+        generate_ground_truth=False,
+        max_workers=2,
+    )
+    pipeline = LangGraphPDFEvaluationPipeline(config=config, ollama_client=FakeOllamaClient())
+
+    original_invoke = pipeline._invoke_page_graph
+
+    def _boom(page: fitz.Page, pdf_name: str, page_number: int) -> dict:  # type: ignore[override]
+        if page_number == 2:
+            raise RuntimeError("simulated page parse failure")
+        return original_invoke(page, pdf_name, page_number)
+
+    monkeypatch.setattr(pipeline, "_invoke_page_graph", _boom)
+
+    result = pipeline.run(pdf_path)
+    assert len(result["parsed_pages"]) == 2
+    assert result["parsed_pages"][1]["source"] == "error"
+    assert any("parse failed" in issue.lower() for issue in result["parsed_pages"][1]["issues"])
